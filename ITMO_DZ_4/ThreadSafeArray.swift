@@ -2,15 +2,7 @@ import Foundation
 
 class ThreadSafeArray<T> {
     private var array: [T] = []
-    private let lock: UnfairLock
-
-    init() {
-        self.lock = UnfairLock.createLock()
-    }
-
-    deinit {
-        UnfairLock.deinitLock(lock)
-    }
+    private let lock = RWLock()
 }
 
 extension ThreadSafeArray: RandomAccessCollection {
@@ -18,55 +10,79 @@ extension ThreadSafeArray: RandomAccessCollection {
     typealias Element = T
 
     var startIndex: Index {
-        lock.withLock {
+        lock.withReadLock {
             return array.startIndex
         }
     }
     var endIndex: Index {
-        lock.withLock {
+        lock.withReadLock {
             return array.endIndex
         }
     }
 
     subscript(index: Index) -> Element {
         get {
-            lock.withLock {
+            lock.withReadLock {
                 return array[index]
+            }
+        }
+        set {
+            lock.withWriteLock {
+                array[index] = newValue
             }
         }
     }
 
     func index(after i: Index) -> Index {
-        lock.withLock {
+        lock.withReadLock {
             return array.index(after: i)
         }
     }
 }
 
-typealias UnfairLock = UnsafeMutablePointer<os_unfair_lock>
+class RWLock {
+    private var lock = pthread_rwlock_t()
 
-extension UnfairLock {
-    static func createLock() -> UnfairLock {
-        let l = UnfairLock.allocate(capacity: 1)
-        l.initialize(to: .init())
-        return l
+    public init() {
+        guard pthread_rwlock_init(&lock, nil) == 0 else {
+            fatalError("RWLock fail init")
+        }
     }
 
-    static func deinitLock(_ lock: UnfairLock) {
-        lock.deinitialize(count: 1)
-        lock.deallocate()
+    deinit {
+        guard pthread_rwlock_destroy(&lock) == 0 else {
+            fatalError("RWLock fail deinit")
+        }
     }
 
-    func lock() {
-        os_unfair_lock_lock(self)
+    func writeLock() {
+        guard pthread_rwlock_wrlock(&lock) == 0 else {
+            fatalError("RWLock fail get write lock")
+        }
+    }
+
+    func readLock() {
+        guard pthread_rwlock_rdlock(&lock) == 0 else {
+            fatalError("RWLock fail get read lock")
+        }
     }
 
     func unlock() {
-        os_unfair_lock_unlock(self)
+        guard pthread_rwlock_unlock(&lock) == 0 else {
+            fatalError("RWLock fail unlock")
+        }
     }
 
-    func withLock<T>(_ action: () -> T) -> T {
-        lock()
+    func withReadLock<T>(_ action: () -> T) -> T {
+        readLock()
+        defer {
+            unlock()
+        }
+        return action()
+    }
+
+    func withWriteLock<T>(_ action: () -> T) -> T {
+        writeLock()
         defer {
             unlock()
         }
